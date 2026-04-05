@@ -3,7 +3,16 @@
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 from typing import Any
+
+# Suppress HuggingFace network calls when model is already cached.
+# Must be set before importing sentence_transformers / huggingface_hub.
+_HF_CACHE = Path.home() / ".cache" / "huggingface" / "hub"
+if _HF_CACHE.exists() and any(_HF_CACHE.iterdir()):
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 from qdrant_client import QdrantClient, models
 from sentence_transformers import SentenceTransformer
@@ -40,9 +49,25 @@ class VectorStore:
         if self._embedder is not None:
             return
         logger.info("Loading embedding model: %s", self.config.embedding.model)
-        self._embedder = SentenceTransformer(
-            self.config.embedding.model, trust_remote_code=True, device="cpu",
-        )
+
+        # Try local cache first. If HF_HUB_OFFLINE is set (see module top),
+        # this won't make any network calls. Falls back to download on miss.
+        try:
+            self._embedder = SentenceTransformer(
+                self.config.embedding.model,
+                trust_remote_code=True,
+                device="cpu",
+                local_files_only=True,
+            )
+        except Exception:
+            logger.info("Model not cached locally, downloading from HuggingFace...")
+            os.environ.pop("HF_HUB_OFFLINE", None)
+            os.environ.pop("TRANSFORMERS_OFFLINE", None)
+            self._embedder = SentenceTransformer(
+                self.config.embedding.model,
+                trust_remote_code=True,
+                device="cpu",
+            )
         self._dim = self._embedder.get_sentence_embedding_dimension()
 
     @property
