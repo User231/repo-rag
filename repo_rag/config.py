@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 CONFIG_FILENAME = "repo-rag.yaml"
 
@@ -24,6 +24,7 @@ DEFAULT_EXCLUDE = [
     "*.min.js", "*.min.css", "*.map", "*.lock",
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
     "repos_cloned", "chroma_db", "ingested_sources",
+    ".repo-rag",
 ]
 
 
@@ -72,16 +73,28 @@ class RepoRagConfig(BaseModel):
     """Root configuration loaded from repo-rag.yaml."""
 
     name: str
+    cache: str = ".repo-rag"  # Relative to project root, or absolute path
     qdrant: QdrantConfig = Field(default_factory=QdrantConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     sources: SourcesConfig = Field(default_factory=SourcesConfig)
 
+    # Set after loading — the directory containing repo-rag.yaml
+    _project_dir: Path | None = PrivateAttr(default=None)
+
     @property
     def cache_dir(self) -> Path:
-        """Per-project cache directory: ~/.cache/repo-rag/{name}/"""
-        d = Path.home() / ".cache" / "repo-rag" / self.name
-        d.mkdir(parents=True, exist_ok=True)
-        return d
+        """Cache directory for web/github/repos/state.
+
+        Resolved relative to the project root (where repo-rag.yaml lives).
+        Can be overridden to an absolute path in config.
+        """
+        p = Path(self.cache)
+        if not p.is_absolute():
+            base = self._project_dir or Path.cwd()
+            p = base / p
+        p = p.resolve()
+        p.mkdir(parents=True, exist_ok=True)
+        return p
 
     @property
     def state_file(self) -> Path:
@@ -116,10 +129,12 @@ def load_config(path: Path | None = None) -> RepoRagConfig:
 
     If *path* is None, searches upward from cwd.
     """
-    config_path = path if path else find_config()
+    config_path = (path if path else find_config()).resolve()
     with open(config_path) as f:
         raw = yaml.safe_load(f)
-    return RepoRagConfig(**raw)
+    cfg = RepoRagConfig(**raw)
+    cfg._project_dir = config_path.parent
+    return cfg
 
 
 def generate_template(project_dir: Path, name: str) -> Path:
@@ -133,6 +148,7 @@ def generate_template(project_dir: Path, name: str) -> Path:
 # Docs: https://github.com/user/repo-rag
 
 name: {name}
+cache: .repo-rag
 
 qdrant:
   url: http://localhost:6333
@@ -169,6 +185,7 @@ sources:
         - "*.min.js"
         - "*.min.css"
         - "*.lock"
+        - .repo-rag
 
   # Optional: web articles to index
   # web:
